@@ -292,8 +292,69 @@ class AdvancedBCEStation:
         self.btn_compute.label.set_fontsize(11); self.btn_compute.label.set_color('white'); self.btn_compute.label.set_fontweight('bold')
         self.btn_compute.on_clicked(self.on_compute_clicked)
 
+        # 导出按钮
+        ax_export = plt.axes([0.02, 0.32, 0.14, 0.055])
+        self.btn_export = Button(ax_export, 'Export DAT', color='#3498db', hovercolor='#2980b9')
+        self.btn_export.label.set_fontsize(11); self.btn_export.label.set_color('white'); self.btn_export.label.set_fontweight('bold')
+        self.btn_export.on_clicked(self.on_export_clicked)
+
         self.init_plots()
         self.update_title_status()
+
+    # ==============================================================
+    # 【XFLR5 兼容性的专用导出系统】
+    # ==============================================================
+    def on_export_clicked(self, event):
+        try:
+
+            X_export_xflr = 0.5 * (1 - np.cos(np.pi * np.linspace(0, 1, 100)))
+            Y_up_xflr, Y_dn_xflr, _ = get_bce_airfoil(self.p, X_export_xflr, mode=self.mode, Zt_ref=self.Zt_ref, Yc_ref=self.Yc_ref)
+            
+            # XFLR5 Selig 规范：上翼面后缘 -> 前缘 -> 下翼面后缘
+            x_up_xflr = X_export_xflr[::-1]
+            y_up_xflr = Y_up_xflr[::-1]
+            x_dn_xflr = X_export_xflr[1:] 
+            y_dn_xflr = Y_dn_xflr[1:]
+            
+            # 导出 XFLR5 专用的 .dat
+            with open("myairfoil.dat", "w", encoding="ascii") as f:
+                f.write("BCE_Airfoil\n")
+
+                for x, y in zip(x_up_xflr, y_up_xflr):
+                    f.write(f" {float(x)+0.0:9.5f}  {float(y)+0.0:9.5f}\n")
+                for x, y in zip(x_dn_xflr, y_dn_xflr):
+                    f.write(f" {float(x)+0.0:9.5f}  {float(y)+0.0:9.5f}\n")
+
+            # 2. 为 CATIA 生成【高精度160节点】的原始坐标点云
+            Y_up_cad, Y_dn_cad, _ = get_bce_airfoil(self.p, X_target, mode=self.mode, Zt_ref=self.Zt_ref, Yc_ref=self.Yc_ref)
+            x_up_cad = X_target[::-1]
+            y_up_cad = Y_up_cad[::-1]
+            x_dn_cad = X_target[1:]
+            y_dn_cad = Y_dn_cad[1:]
+
+            with open("digitaluse.txt", "w", encoding="ascii") as f:
+                for x, y in zip(x_up_cad, y_up_cad):
+                    f.write(f"{float(x)+0.0:.6f}\t{float(y)+0.0:.6f}\t0.000000\n")
+                for x, y in zip(x_dn_cad, y_dn_cad):
+                    f.write(f"{float(x)+0.0:.6f}\t{float(y)+0.0:.6f}\t0.000000\n")
+
+            print("\n[+] 导出成功！")
+            print("  -> myairfoil.dat (专供 XFLR5：已降采样至199点并按 Selig 5位格式对齐)")
+            print("  -> digitaluse.txt (专供 CATIA：维持 319点高精度点云格式)")
+            
+            # 按钮闪烁反馈
+            self.btn_export.label.set_text("Exported ✔")
+            self.fig.canvas.draw_idle()
+            
+            def reset_text():
+                self.btn_export.label.set_text("Export DAT")
+                self.fig.canvas.draw_idle()
+            timer = self.fig.canvas.new_timer(interval=1500)
+            timer.add_callback(reset_text)
+            timer.start()
+
+        except Exception as e:
+            print(f"[-] 导出失败: {e}")
 
     def compute_reference_fields(self):
         h_curve, a_curve, b_curve, _ = get_bce_functions(self.p)
@@ -364,24 +425,17 @@ class AdvancedBCEStation:
         self.execute_xfoil_calculation(is_initial=True)
 
     def optimize_axes_limits(self):
-        """ 
-        【超大基础视场 + 自适应包络】：
-        提供远大于原本包络的基础画幅边界，彻底解放大尺度正负拖拽！
-        """
         h_pts = self.p[0:7]
         a_pts = self.p[7:14]
         b_pts = self.p[14:20]
 
-        # h 轴：基础视场设为 [-0.15, 0.50]，如果被突破再向外扩大
         h_min, h_max = min(h_pts), max(h_pts)
         self.ax_h.set_ylim(min(-0.15, h_min - 0.05), max(0.50, h_max + 0.05))
 
-        # α 轴：基础视场扩大至 [-35, 35] 极其宽阔的弯度变形空间
         a_min, a_max = min(a_pts), max(a_pts)
         limit_a = max(35.0, abs(a_min)*1.2, abs(a_max)*1.2)
         self.ax_a.set_ylim(-limit_a, limit_a)
 
-        # β 轴：基础视场扩大至 [0, 75]
         b_min, b_max = min(b_pts), max(b_pts)
         self.ax_b.set_ylim(0, max(75.0, b_max + 5.0))
 
@@ -437,7 +491,6 @@ class AdvancedBCEStation:
         if self.active_var_idx is None or event.inaxes is None: return
         new_y = event.ydata
         
-        # 解除对 h(x) 和 α(x) 的硬性防越界裁剪，交由底层的极大边界管控
         if self.active_var_idx >= 14: 
             new_y = max(2.0, min(80.0, new_y))
             
